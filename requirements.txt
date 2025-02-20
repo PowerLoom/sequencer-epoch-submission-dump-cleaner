@@ -1,0 +1,1 @@
+redis>=4.2.0  # Using redis-py's built-in async support 
