@@ -1,0 +1,9 @@
+__pycache__/
+.python-version
+*.zip
+*.tar
+*.whl
+*.egg
+*.egg-info
+*.dist-info
+*.metadata
