@@ -1,8 +1,9 @@
 import asyncio
 from redis import asyncio as aioredis
+from redis.asyncio.sentinel import Sentinel
 import logging
 import os
-from typing import Optional, List, Tuple
+from typing import List, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -19,16 +20,28 @@ class EpochCacheCleaner:
         self.redis_password = os.getenv('REDIS_PASSWORD', None)
         self.redis_db = int(os.getenv('REDIS_DB', 0))
         self.max_concurrent = int(os.getenv('MAX_CONCURRENT', 10))
+        self.redis_sentinel_mode = os.getenv('REDIS_SENTINEL_MODE', 'false').lower() == 'true'
         self.batch_semaphore = asyncio.Semaphore(5)  # Control concurrent batches
         
     async def init_redis(self):
         """Initialize Redis connection"""
-        self.redis_client = await aioredis.from_url(
-            f"redis://{self.redis_host}:{self.redis_port}",
-            password=self.redis_password,
-            db=self.redis_db,
-            decode_responses=True
-        )
+        if not self.redis_sentinel_mode:
+            self.redis_client = await aioredis.from_url(
+                f"redis://{self.redis_host}:{self.redis_port}",
+                password=self.redis_password,
+                db=self.redis_db,
+                decode_responses=True
+            )
+        else:
+            sentinel = Sentinel([(self.redis_host, self.redis_port)], 
+                              password=self.redis_password,
+                              sentinel_kwargs={'password': self.redis_password})
+            self.redis_client = await sentinel.master_for(
+                service_name='mymaster',
+                db=self.redis_db,
+                decode_responses=True
+            )
+
 
     async def scan_hash_keys(self, pattern: str = "snapshotter:*:*:*:slot_submissions", 
                            count: int = 1000) -> List[Tuple[str, str, str, str]]:
