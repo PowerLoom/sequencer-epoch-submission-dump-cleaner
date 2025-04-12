@@ -42,7 +42,26 @@ class EpochCacheCleaner:
                 decode_responses=True
             )
 
-
+    # "%s.%s.%d", ActiveSnapshottersForEpoch, strings.ToLower(dataMarketAddress), epochID
+    async def scan_active_snapshotters_set_keys(self, pattern: str = "ActiveSnapshottersForEpoch.*.*") -> List[str]:
+        valid_keys = []
+        cursor = 0
+        
+        while True:
+            cursor, keys = await self.redis_client.scan(
+                cursor=cursor,
+                match=pattern,
+                count=1000
+            )
+            
+            for key in keys:
+                valid_keys.append(key)
+                
+            if int(cursor) == 0:
+                break
+                
+        return valid_keys
+        
     async def scan_hash_keys(self, pattern: str = "snapshotter:*:*:*:slot_submissions", 
                            count: int = 1000) -> List[Tuple[str, str, str, str]]:
         """
@@ -185,6 +204,42 @@ async def main():
 
     logger.info(f"Cleanup completed. Processed {total_keys} keys, deleted {total_deleted} entries")
     
+    # next: delete active snapshotters set keys beyond epochs_to_keep
+    active_snapshotters_set_keys = await cleaner.scan_active_snapshotters_set_keys()
+    logger.info(f"Found {len(active_snapshotters_set_keys)} active snapshotter set keys")
+    
+    # Convert to integers and find range
+    epoch_key_map = {}  # Map epoch to corresponding keys
+    for key in active_snapshotters_set_keys:
+        epoch_id = key.split('.')[-1]
+        epoch_key_map[epoch_id] = key
+
+    epoch_nums = [int(epoch) for epoch in epoch_key_map.keys()]
+    if not epoch_nums:
+        logger.info("No active snapshotter keys found")
+        await cleaner.redis_client.aclose()
+        return
+        
+    max_epoch = max(epoch_nums)
+    threshold_epoch = max_epoch - epochs_to_keep
+    keys_to_delete = [
+        epoch_key_map[str(epoch)] for epoch in epoch_nums 
+        if epoch <= threshold_epoch
+    ]
+    
+    if keys_to_delete:
+        logger.info(f"Deleting {len(keys_to_delete)} active snapshotter set keys "
+                   f"(epochs <= {threshold_epoch})")
+        
+        # Delete in batches of 1000
+        batch_size = 1000
+        for i in range(0, len(keys_to_delete), batch_size):
+            batch = keys_to_delete[i:i + batch_size]
+            await cleaner.redis_client.delete(*batch)
+            logger.info(f"Progress: Deleted {min(i + batch_size, len(keys_to_delete))}/{len(keys_to_delete)} keys")
+    else:
+        logger.info("No active snapshotter keys to delete")
+
     await cleaner.redis_client.aclose()
 
 if __name__ == "__main__":
